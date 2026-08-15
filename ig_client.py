@@ -680,6 +680,8 @@ async def process_new_ig(bot: Bot) -> None:
             logger.exception("Ошибка сохранения сообщения Instagram %s", item.get("ig_id"))
     if messages:
         logger.info("Обработано новых сообщений Instagram: %s", len(messages))
+    else:
+        logger.info("Новых сообщений Instagram нет")
 
 
 async def _notify_code_watch(bot: Bot) -> None:
@@ -712,6 +714,11 @@ async def ig_loop(bot: Bot) -> None:
     if not config.IG_USERNAME or not config.IG_PASSWORD:
         logger.warning("IG_USERNAME или IG_PASSWORD не заданы — проверка Instagram отключена")
         return
+    logger.info(
+        "Проверка Instagram запущена для %s (каждые %s сек)",
+        config.IG_USERNAME,
+        config.IG_POLL_INTERVAL,
+    )
     asyncio.create_task(_notify_code_watch(bot))
     while True:
         try:
