@@ -194,5 +194,5 @@ async def _start_reply(
 
 async def _delete(query: CallbackQuery, email: dict) -> None:
     await db.soft_delete(email["id"])
-    await query.answer("Письмо удалено из бота")
+    await query.answer("Письмо удалено из бота", show_alert=True)
     await refresh_cards(query.bot, email["id"])

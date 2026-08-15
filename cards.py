@@ -13,11 +13,15 @@ async def refresh_cards(bot: Bot, email_id: int) -> None:
 
     notes = await db.get_notifications(email_id)
     if email["deleted"]:
-        text = "🗑 Письмо удалено из бота (в почтовом ящике оно осталось)."
-        markup = None
-    else:
-        text = format_card(email, is_new=False)
-        markup = email_keyboard(email)
+        for note in notes:
+            try:
+                await bot.delete_message(note["chat_id"], note["message_id"])
+            except TelegramBadRequest:
+                pass
+        return
+
+    text = format_card(email, is_new=False)
+    markup = email_keyboard(email)
 
     for note in notes:
         try:
