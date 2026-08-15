@@ -15,8 +15,8 @@ def _welcome(role_key: str) -> str:
     name = config.ROLES[role_key]["name"]
     return (
         f"Вы вошли как {name}.\n"
-        "Новые письма будут приходить в этот чат.\n\n"
-        "/list — список писем\n"
+        "Новые письма и сообщения Instagram будут приходить в этот чат.\n\n"
+        "/list — список писем и сообщений Instagram\n"
         "/reset_role — сменить пользователя"
     )
 
@@ -77,6 +77,7 @@ async def cmd_help(message: Message):
     await message.answer(
         "Команды:\n"
         "/start — вход\n"
-        "/list — письма в боте\n"
+        "/list — письма и сообщения Instagram в боте\n"
+        "/ig_code — отправить код подтверждения Instagram\n"
         "/reset_role — сменить пользователя"
     )

@@ -25,6 +25,10 @@ MAIL_FOLDERS = [
     if name.strip()
 ]
 
+IG_USERNAME = os.getenv("IG_USERNAME", "").strip()
+IG_PASSWORD = os.getenv("IG_PASSWORD", "").strip()
+IG_POLL_INTERVAL = int(os.getenv("IG_POLL_INTERVAL", "90"))
+
 FOLDER_LABELS = {
     "metodicheskaya_chast": "Методическая часть",
     "tekhnicheskaya_chast": "Техническая часть",
@@ -48,6 +52,8 @@ DB_PATH = BASE_DIR / "bot.db"
 STORAGE_DIR = BASE_DIR / "storage"
 MAIL_STORAGE = STORAGE_DIR / "mail"
 REPLY_STORAGE = STORAGE_DIR / "replies"
+IG_STORAGE = STORAGE_DIR / "instagram"
+IG_SESSION_FILE = STORAGE_DIR / "ig_session.json"
 
 ROLES = {
     "andrey": {

@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 imap-tools==1.7.4
 aiosmtplib==3.0.2
 beautifulsoup4==4.12.3
+instagrapi==2.18.14

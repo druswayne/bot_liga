@@ -8,23 +8,24 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 import db
-from cards import refresh_cards
+from cards import refresh_cards, view_packs
 from config import ROLES, STATUS_IN_PROGRESS, STATUS_PROCESSED
+from handlers_ig import send_ig_cards
 from keyboards import CloseViewCB, EmailCB, close_view_keyboard, email_keyboard, reply_keyboard
 from states import ReplyStates
 from utils import format_card, split_text
 
 router = Router()
 
-# token -> (chat_id, [message_id, ...])
-_view_packs: dict[str, tuple[int, list[int]]] = {}
-
 
 @router.message(Command("list"))
 async def cmd_list(message: Message):
     emails = await db.list_open_emails()
+    ig_count = 0
     if not emails:
-        await message.answer("Писем пока нет.")
+        ig_count = await send_ig_cards(message)
+        if not ig_count:
+            await message.answer("Писем и сообщений Instagram пока нет.")
         return
     for email in reversed(emails):
         sent = await message.answer(
@@ -33,6 +34,7 @@ async def cmd_list(message: Message):
             parse_mode="HTML",
         )
         await db.add_notification(email["id"], message.chat.id, sent.message_id)
+    await send_ig_cards(message)
 
 
 @router.callback_query(EmailCB.filter())
@@ -64,7 +66,7 @@ async def on_email_action(
 
 @router.callback_query(CloseViewCB.filter())
 async def close_view(query: CallbackQuery, callback_data: CloseViewCB):
-    pack = _view_packs.pop(callback_data.token, None)
+    pack = view_packs.pop(callback_data.token, None)
     chat_id = query.message.chat.id
     message_ids = pack[1] if pack else [query.message.message_id]
     await query.answer()
@@ -117,7 +119,7 @@ async def _view(query: CallbackQuery, email: dict) -> None:
         )
         sent_ids.append(sent.message_id)
 
-    _view_packs[token] = (query.message.chat.id, sent_ids)
+    view_packs[token] = (query.message.chat.id, sent_ids)
 
 
 async def _take(query: CallbackQuery, email: dict, db_user: dict) -> None:
@@ -184,6 +186,7 @@ async def _start_reply(
         reply_markup=reply_keyboard(),
     )
     await state.update_data(
+        source="email",
         email_id=email["id"],
         text_parts=[],
         files=[],

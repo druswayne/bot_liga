@@ -8,7 +8,8 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 import db
-from cards import refresh_cards
+from cards import refresh_cards, refresh_ig_cards
+from ig_client import mark_ig_seen, send_ig_reply
 from keyboards import ReplyCB, reply_keyboard
 from mail_imap import mark_seen
 from mail_smtp import send_reply
@@ -114,6 +115,11 @@ async def cancel_reply(query: CallbackQuery, state: FSMContext):
 @router.callback_query(ReplyStates.collecting, ReplyCB.filter(F.act == "send"))
 async def send_collected_reply(query: CallbackQuery, state: FSMContext, db_user: dict):
     data = await state.get_data()
+    source = data.get("source") or "email"
+    if source == "instagram":
+        await _send_instagram_reply(query, state, db_user, data)
+        return
+
     email_id = data.get("email_id")
     email = await db.get_email(email_id) if email_id else None
     if not email or email["deleted"]:
@@ -156,6 +162,52 @@ async def send_collected_reply(query: CallbackQuery, state: FSMContext, db_user:
     await db.mark_processed(email["id"], db_user["role"])
     await mark_seen(email.get("imap_uid"), email.get("imap_folder"))
     await refresh_cards(query.bot, email["id"])
+    shutil.rmtree(_reply_dir(query.from_user.id), ignore_errors=True)
+    await _cleanup_messages(query.bot, state, query.message.chat.id)
+    await state.clear()
+
+
+async def _send_instagram_reply(
+    query: CallbackQuery, state: FSMContext, db_user: dict, data: dict
+) -> None:
+    ig_id = data.get("ig_id")
+    item = await db.get_ig_message(ig_id) if ig_id else None
+    if not item or item["deleted"]:
+        await _cleanup_messages(query.bot, state, query.message.chat.id)
+        await state.clear()
+        await query.answer("Сообщение не найдено", show_alert=True)
+        return
+
+    text = "\n".join(data.get("text_parts") or []).strip()
+    files = data.get("files") or []
+    if not text and not files:
+        await query.answer("Добавьте текст или файл", show_alert=True)
+        return
+
+    thread_id = item.get("thread_id")
+    if not thread_id:
+        await query.answer("Не найден диалог Instagram для ответа", show_alert=True)
+        return
+
+    await query.answer("Отправляю ответ в Instagram...")
+    try:
+        await send_ig_reply(
+            thread_id=thread_id,
+            text=text,
+            files=files,
+            is_pending=bool(item.get("is_pending")),
+        )
+    except Exception:
+        await query.message.edit_text(
+            "Не удалось отправить сообщение в Instagram. "
+            "Проверьте IG_USERNAME / IG_PASSWORD и при необходимости отправьте /ig_code.",
+            reply_markup=reply_keyboard(),
+        )
+        return
+
+    await db.mark_ig_processed(item["id"], db_user["role"])
+    await mark_ig_seen(thread_id, item.get("ig_id"))
+    await refresh_ig_cards(query.bot, item["id"])
     shutil.rmtree(_reply_dir(query.from_user.id), ignore_errors=True)
     await _cleanup_messages(query.bot, state, query.message.chat.id)
     await state.clear()

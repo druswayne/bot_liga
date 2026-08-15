@@ -9,7 +9,9 @@ import config
 import db
 from handlers_auth import router as auth_router
 from handlers_emails import router as emails_router
+from handlers_ig import router as ig_router
 from handlers_reply import router as reply_router
+from ig_client import ig_loop
 from mail_imap import mail_loop
 from middleware import AccessMiddleware
 
@@ -28,6 +30,8 @@ async def main() -> None:
         logger.warning("ADMIN_PASSWORD в .env пустой — вход в бота будет недоступен")
     if not config.MAIL_PASSWORD:
         logger.warning("MAIL_PASSWORD в .env пустой — проверка почты не запустится")
+    if not config.IG_USERNAME or not config.IG_PASSWORD:
+        logger.warning("IG_USERNAME или IG_PASSWORD в .env пустые — проверка Instagram не запустится")
 
     config.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     await db.init_db()
@@ -39,8 +43,10 @@ async def main() -> None:
     dp.include_router(auth_router)
     dp.include_router(reply_router)
     dp.include_router(emails_router)
+    dp.include_router(ig_router)
 
     asyncio.create_task(mail_loop(bot))
+    asyncio.create_task(ig_loop(bot))
     logger.info("Бот запущен")
     await dp.start_polling(bot)
 

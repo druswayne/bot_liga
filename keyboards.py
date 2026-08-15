@@ -14,6 +14,11 @@ class EmailCB(CallbackData, prefix="em"):
     eid: int
 
 
+class IgCB(CallbackData, prefix="ig"):
+    act: str
+    eid: int
+
+
 class ReplyCB(CallbackData, prefix="rp"):
     act: str
 
@@ -42,6 +47,22 @@ def email_keyboard(email: dict) -> InlineKeyboardMarkup:
     if status != STATUS_PROCESSED:
         builder.button(text="Ответить", callback_data=EmailCB(act="reply", eid=eid))
     builder.button(text="Удалить", callback_data=EmailCB(act="delete", eid=eid))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def ig_keyboard(item: dict) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    eid = item["id"]
+    status = item.get("status")
+    builder.button(text="Просмотреть", callback_data=IgCB(act="view", eid=eid))
+    if status == STATUS_PENDING:
+        builder.button(text="Взять в работу", callback_data=IgCB(act="take", eid=eid))
+    if status == STATUS_IN_PROGRESS:
+        builder.button(text="Передумал", callback_data=IgCB(act="release", eid=eid))
+    if status != STATUS_PROCESSED:
+        builder.button(text="Ответить", callback_data=IgCB(act="reply", eid=eid))
+    builder.button(text="Удалить", callback_data=IgCB(act="delete", eid=eid))
     builder.adjust(1)
     return builder.as_markup()
 

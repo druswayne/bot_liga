@@ -18,6 +18,7 @@ class AccessMiddleware(BaseMiddleware):
         text = event.text if isinstance(event, Message) else None
         is_start = bool(text and text.startswith("/start"))
         is_reset = bool(text and text.startswith("/reset_role"))
+        is_ig_code = bool(text and text.startswith("/ig_code"))
 
         if is_start:
             return await handler(event, data)
@@ -35,7 +36,7 @@ class AccessMiddleware(BaseMiddleware):
                 await event.answer("Сначала авторизуйтесь через /start", show_alert=True)
             return
 
-        if is_reset:
+        if is_reset or is_ig_code:
             return await handler(event, data)
 
         if not user.get("role"):
