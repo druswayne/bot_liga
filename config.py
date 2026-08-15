@@ -16,6 +16,31 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.liga-znatokov.by").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 MAIL_POLL_INTERVAL = int(os.getenv("MAIL_POLL_INTERVAL", "30"))
+MAIL_FOLDERS = [
+    name.strip()
+    for name in os.getenv(
+        "MAIL_FOLDERS",
+        "INBOX.Drafts.metodicheskaya_chast,INBOX.Drafts.tekhnicheskaya_chast,INBOX.Drafts.drugoe",
+    ).split(",")
+    if name.strip()
+]
+
+FOLDER_LABELS = {
+    "metodicheskaya_chast": "Методическая часть",
+    "tekhnicheskaya_chast": "Техническая часть",
+    "drugoe": "Другое",
+    "INBOX": "Входящие",
+    "INBOX.Методическая часть": "Методическая часть",
+}
+
+
+def folder_label(folder: str | None) -> str:
+    if not folder:
+        return ""
+    if folder in FOLDER_LABELS:
+        return FOLDER_LABELS[folder]
+    short = folder.split(".")[-1]
+    return FOLDER_LABELS.get(short, folder)
 
 FORWARD_FROM = "th@liga-znatokov.by"
 

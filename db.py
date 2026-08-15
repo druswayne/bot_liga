@@ -36,7 +36,8 @@ async def init_db() -> None:
                 replied_by TEXT,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 received_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                imap_folder TEXT
             );
 
             CREATE TABLE IF NOT EXISTS attachments (
@@ -64,6 +65,11 @@ async def init_db() -> None:
             """
         )
         await db.commit()
+        cur = await db.execute("PRAGMA table_info(emails)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "imap_folder" not in columns:
+            await db.execute("ALTER TABLE emails ADD COLUMN imap_folder TEXT")
+            await db.commit()
     finally:
         await db.close()
 
@@ -165,16 +171,26 @@ async def insert_email(
     reply_to: str,
     body: str,
     received_at: str | None,
+    imap_folder: str | None = None,
 ) -> int:
     db = await get_db()
     try:
         cur = await db.execute(
             """
             INSERT INTO emails(
-                imap_uid, message_id, subject, from_addr, reply_to, body, received_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                imap_uid, message_id, subject, from_addr, reply_to, body, received_at, imap_folder
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (imap_uid, message_id, subject, from_addr, reply_to, body, received_at),
+            (
+                imap_uid,
+                message_id,
+                subject,
+                from_addr,
+                reply_to,
+                body,
+                received_at,
+                imap_folder,
+            ),
         )
         await db.commit()
         return cur.lastrowid

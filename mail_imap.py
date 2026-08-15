@@ -33,62 +33,100 @@ def _safe_filename(name: str) -> str:
     return name or "file"
 
 
-def _fetch_new_sync(last_uid: int) -> tuple[list[dict], int]:
+def _fetch_folder(mailbox: MailBox, folder: str, last_uid: int) -> tuple[list[dict], int]:
     messages: list[dict] = []
     max_uid = last_uid
+    folder_max = last_uid
+    if last_uid <= 0:
+        uids = mailbox.uids()
+        folder_max = max((int(u) for u in uids), default=0)
+        criteria = AND(seen=False)
+    else:
+        criteria = f"UID {last_uid + 1}:*"
+
+    for msg in mailbox.fetch(criteria, mark_seen=False, bulk=True):
+        uid = int(msg.uid)
+        if last_uid > 0 and uid <= last_uid:
+            continue
+        max_uid = max(max_uid, uid)
+
+        from_addr = parse_from(msg.from_ or "")
+        if from_addr.lower() == config.MAIL_USERNAME.lower():
+            continue
+
+        body = extract_body(msg.text, msg.html)
+        attachments = []
+        for att in msg.attachments:
+            mime = (att.content_type or "").lower()
+            attachments.append(
+                {
+                    "filename": att.filename or "file",
+                    "payload": att.payload or b"",
+                    "mime": mime,
+                    "is_image": mime.startswith("image/"),
+                }
+            )
+
+        received = msg.date.isoformat() if msg.date else datetime.now().isoformat()
+        messages.append(
+            {
+                "imap_uid": str(uid),
+                "imap_folder": folder,
+                "message_id": _message_id(msg),
+                "subject": msg.subject or "",
+                "from_addr": from_addr,
+                "body": body,
+                "reply_to": extract_reply_to(from_addr, body),
+                "received_at": received,
+                "attachments": attachments,
+            }
+        )
+
+    max_uid = max(max_uid, folder_max if last_uid <= 0 else max_uid)
+    return messages, max_uid
+
+
+def _folder_candidates(folder: str) -> list[str]:
+    names = [folder]
+    if not folder.upper().startswith("INBOX"):
+        names.extend(
+            [
+                f"INBOX.{folder}",
+                f"INBOX.Drafts.{folder}",
+            ]
+        )
+    return names
+
+
+def _open_folder(mailbox: MailBox, folder: str) -> str | None:
+    for name in _folder_candidates(folder):
+        try:
+            mailbox.folder.set(name)
+            return name
+        except Exception:
+            logger.debug("Папка недоступна: %s", name)
+    logger.error("Не удалось открыть папку %s", folder)
+    return None
+
+
+def _fetch_new_sync(last_uids: dict[str, int]) -> tuple[list[dict], dict[str, int]]:
+    messages: list[dict] = []
+    new_uids = dict(last_uids)
 
     with MailBox(config.IMAP_HOST, port=config.IMAP_PORT).login(
         config.MAIL_USERNAME,
         config.MAIL_PASSWORD,
     ) as mailbox:
-        folder_max = last_uid
-        if last_uid <= 0:
-            uids = mailbox.uids()
-            folder_max = max((int(u) for u in uids), default=0)
-            criteria = AND(seen=False)
-        else:
-            criteria = f"UID {last_uid + 1}:*"
-
-        for msg in mailbox.fetch(criteria, mark_seen=False, bulk=True):
-            uid = int(msg.uid)
-            if last_uid > 0 and uid <= last_uid:
+        for folder in config.MAIL_FOLDERS:
+            last_uid = last_uids.get(folder, 0)
+            resolved = _open_folder(mailbox, folder)
+            if not resolved:
                 continue
-            max_uid = max(max_uid, uid)
+            folder_messages, max_uid = _fetch_folder(mailbox, resolved, last_uid)
+            messages.extend(folder_messages)
+            new_uids[folder] = max_uid
 
-            from_addr = parse_from(msg.from_ or "")
-            if from_addr.lower() == config.MAIL_USERNAME.lower():
-                continue
-
-            body = extract_body(msg.text, msg.html)
-            attachments = []
-            for att in msg.attachments:
-                mime = (att.content_type or "").lower()
-                attachments.append(
-                    {
-                        "filename": att.filename or "file",
-                        "payload": att.payload or b"",
-                        "mime": mime,
-                        "is_image": mime.startswith("image/"),
-                    }
-                )
-
-            received = msg.date.isoformat() if msg.date else datetime.now().isoformat()
-            messages.append(
-                {
-                    "imap_uid": str(uid),
-                    "message_id": _message_id(msg),
-                    "subject": msg.subject or "",
-                    "from_addr": from_addr,
-                    "body": body,
-                    "reply_to": extract_reply_to(from_addr, body),
-                    "received_at": received,
-                    "attachments": attachments,
-                }
-            )
-
-        max_uid = max(max_uid, folder_max if last_uid <= 0 else max_uid)
-
-    return messages, max_uid
+    return messages, new_uids
 
 
 async def _save_and_notify(bot: Bot, item: dict) -> None:
@@ -104,6 +142,7 @@ async def _save_and_notify(bot: Bot, item: dict) -> None:
         reply_to=item["reply_to"],
         body=item["body"],
         received_at=item["received_at"],
+        imap_folder=item.get("imap_folder"),
     )
 
     folder = config.MAIL_STORAGE / str(email_id)
@@ -145,10 +184,13 @@ async def _save_and_notify(bot: Bot, item: dict) -> None:
 
 
 async def process_new_mail(bot: Bot) -> None:
-    last_uid_raw = await db.get_setting("last_uid")
-    last_uid = int(last_uid_raw) if last_uid_raw else 0
+    last_uids: dict[str, int] = {}
+    for folder in config.MAIL_FOLDERS:
+        raw = await db.get_setting(f"last_uid:{folder}")
+        last_uids[folder] = int(raw) if raw else 0
+
     loop = asyncio.get_running_loop()
-    messages, max_uid = await loop.run_in_executor(None, _fetch_new_sync, last_uid)
+    messages, new_uids = await loop.run_in_executor(None, _fetch_new_sync, last_uids)
 
     for item in messages:
         try:
@@ -159,29 +201,38 @@ async def process_new_mail(bot: Bot) -> None:
     if messages:
         logger.info("Обработано новых писем: %s", len(messages))
 
-    if max_uid > last_uid:
-        await db.set_setting("last_uid", str(max_uid))
+    for folder, max_uid in new_uids.items():
+        if max_uid > last_uids.get(folder, 0):
+            await db.set_setting(f"last_uid:{folder}", str(max_uid))
 
 
-def _mark_seen_sync(imap_uid: str) -> None:
+def _mark_seen_sync(imap_uid: str, folder: str) -> None:
     if not imap_uid:
         return
     with MailBox(config.IMAP_HOST, port=config.IMAP_PORT).login(
         config.MAIL_USERNAME,
         config.MAIL_PASSWORD,
     ) as mailbox:
+        resolved = _open_folder(mailbox, folder)
+        if not resolved:
+            raise RuntimeError(f"Папка не найдена: {folder}")
         mailbox.flag(imap_uid, MailMessageFlags.SEEN, True)
 
 
-async def mark_seen(imap_uid: str | None) -> None:
+async def mark_seen(imap_uid: str | None, folder: str | None = None) -> None:
     if not imap_uid or not config.MAIL_PASSWORD:
         return
+    target_folder = folder or (config.MAIL_FOLDERS[0] if config.MAIL_FOLDERS else "INBOX")
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, _mark_seen_sync, str(imap_uid))
-        logger.info("Письмо UID=%s отмечено как прочитанное", imap_uid)
+        await loop.run_in_executor(None, _mark_seen_sync, str(imap_uid), target_folder)
+        logger.info("Письмо UID=%s в %s отмечено как прочитанное", imap_uid, target_folder)
     except Exception:
-        logger.exception("Не удалось отметить письмо UID=%s как прочитанное", imap_uid)
+        logger.exception(
+            "Не удалось отметить письмо UID=%s в %s как прочитанное",
+            imap_uid,
+            target_folder,
+        )
 
 
 async def mail_loop(bot: Bot) -> None:

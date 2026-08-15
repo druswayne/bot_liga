@@ -154,7 +154,7 @@ async def send_collected_reply(query: CallbackQuery, state: FSMContext, db_user:
         return
 
     await db.mark_processed(email["id"], db_user["role"])
-    await mark_seen(email.get("imap_uid"))
+    await mark_seen(email.get("imap_uid"), email.get("imap_folder"))
     await refresh_cards(query.bot, email["id"])
     shutil.rmtree(_reply_dir(query.from_user.id), ignore_errors=True)
     await _cleanup_messages(query.bot, state, query.message.chat.id)
