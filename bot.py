@@ -1,0 +1,49 @@
+import asyncio
+import logging
+import sys
+
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
+import config
+import db
+from handlers_auth import router as auth_router
+from handlers_emails import router as emails_router
+from handlers_reply import router as reply_router
+from mail_imap import mail_loop
+from middleware import AccessMiddleware
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+async def main() -> None:
+    if not config.BOT_TOKEN:
+        logger.error("Укажите BOT_TOKEN в файле .env")
+        sys.exit(1)
+    if not config.ADMIN_PASSWORD:
+        logger.warning("ADMIN_PASSWORD в .env пустой — вход в бота будет недоступен")
+    if not config.MAIL_PASSWORD:
+        logger.warning("MAIL_PASSWORD в .env пустой — проверка почты не запустится")
+
+    config.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    await db.init_db()
+
+    bot = Bot(token=config.BOT_TOKEN)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.message.middleware(AccessMiddleware())
+    dp.callback_query.middleware(AccessMiddleware())
+    dp.include_router(auth_router)
+    dp.include_router(reply_router)
+    dp.include_router(emails_router)
+
+    asyncio.create_task(mail_loop(bot))
+    logger.info("Бот запущен")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
