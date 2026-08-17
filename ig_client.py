@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import re
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,64 @@ _async_lock = asyncio.Lock()
 _pending_kind: str | None = None
 _code_event = threading.Event()
 _code_value: str | None = None
+
+_backoff_sec = 0
+_backoff_until = 0.0
+_MIN_BACKOFF = 10 * 60
+_MAX_BACKOFF = 30 * 60
+
+
+class InstagramRateLimited(Exception):
+    """Instagram вернул 429 — нужно подождать, а не логиниться снова."""
+
+
+def _is_rate_limited(exc: BaseException | None) -> bool:
+    from instagrapi.exceptions import ClientThrottledError, PleaseWaitFewMinutes
+
+    types: tuple[type[BaseException], ...] = (ClientThrottledError, PleaseWaitFewMinutes)
+    try:
+        from instagrapi.exceptions import RateLimitError
+
+        types += (RateLimitError,)
+    except ImportError:
+        pass
+    try:
+        from requests.exceptions import RetryError
+
+        types += (RetryError,)
+    except ImportError:
+        pass
+
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, types):
+            return True
+        text = str(current).lower()
+        if "429" in text or "too many" in text or "please wait" in text:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _mark_rate_limited() -> None:
+    global _backoff_sec, _backoff_until
+    _backoff_sec = min(max(_backoff_sec * 2, _MIN_BACKOFF), _MAX_BACKOFF)
+    _backoff_until = time.monotonic() + _backoff_sec
+    logger.warning(
+        "Instagram ограничил частоту запросов (429). Пауза %s мин, без повторного входа.",
+        _backoff_sec // 60,
+    )
+
+
+def _reset_backoff() -> None:
+    global _backoff_sec, _backoff_until
+    was_limited = _backoff_sec > 0
+    _backoff_sec = 0
+    _backoff_until = 0.0
+    if was_limited:
+        logger.info("Лимит Instagram снят, проверка продолжается")
 
 
 def pending_code_kind() -> str | None:
@@ -343,63 +402,82 @@ def _new_client():
     from instagrapi import Client
 
     client = Client()
-    client.delay_range = [1, 3]
+    client.delay_range = [2, 5]
     client.challenge_code_handler = _challenge_code_handler
     return client
 
 
-def _login_sync():
-    from instagrapi.exceptions import ChallengeRequired, LoginRequired, TwoFactorRequired
+def _password_login(client):
+    from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired
 
-    global _client
-    session_file = config.IG_SESSION_FILE
-    session_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if session_file.exists():
-        client = _new_client()
-        try:
-            client.load_settings(session_file)
-            client.login(config.IG_USERNAME, config.IG_PASSWORD)
-            client.dump_settings(session_file)
-            logger.info("Вход в Instagram выполнен по сохранённой сессии")
-            _client = client
-            return client
-        except LoginRequired:
-            logger.warning("Сессия Instagram истекла, выполняю повторный вход")
-        except TwoFactorRequired:
-            code = _request_code("2fa")
-            if not code:
-                raise RuntimeError("Не получен код двухфакторной аутентификации Instagram")
-            client.login(config.IG_USERNAME, config.IG_PASSWORD, verification_code=code)
-            client.dump_settings(session_file)
-            logger.info("Вход в Instagram выполнен после 2FA")
-            _client = client
-            return client
-        except ChallengeRequired:
-            logger.exception("Instagram запросил ручную проверку аккаунта")
-            raise
-        except Exception:
-            logger.exception("Не удалось использовать сохранённую сессию Instagram")
-
-    client = _new_client()
     try:
         client.login(config.IG_USERNAME, config.IG_PASSWORD)
     except TwoFactorRequired:
         code = _request_code("2fa")
         if not code:
             raise RuntimeError("Не получен код двухфакторной аутентификации Instagram")
-        client.login(config.IG_USERNAME, config.IG_PASSWORD, verification_code=code)
-    client.dump_settings(session_file)
+        try:
+            client.login(config.IG_USERNAME, config.IG_PASSWORD, verification_code=code)
+        except Exception as e:
+            if _is_rate_limited(e):
+                logger.warning("Instagram ограничил частоту входа (429). Повторю позже, без второго логина.")
+                raise InstagramRateLimited from e
+            raise
+        logger.info("Вход в Instagram выполнен после 2FA")
+        return client
+    except ChallengeRequired:
+        logger.exception("Instagram запросил ручную проверку аккаунта")
+        raise
+    except Exception as e:
+        if _is_rate_limited(e):
+            logger.warning("Instagram ограничил частоту входа (429). Повторю позже, без второго логина.")
+            raise InstagramRateLimited from e
+        raise
     logger.info("Вход в Instagram выполнен")
+    return client
+
+
+def _login_sync(*, force_password: bool = False):
+    from instagrapi.exceptions import LoginRequired
+
+    global _client
+    session_file = config.IG_SESSION_FILE
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+
+    client = _new_client()
+    if session_file.exists():
+        try:
+            client.load_settings(session_file)
+        except Exception:
+            logger.exception("Не удалось прочитать сессию Instagram")
+            client = _new_client()
+
+    if session_file.exists() and not force_password:
+        try:
+            client.get_timeline_feed()
+            client.dump_settings(session_file)
+            logger.info("Вход в Instagram выполнен по сохранённой сессии")
+            _client = client
+            return client
+        except LoginRequired:
+            logger.warning("Сессия Instagram истекла, выполняю повторный вход")
+        except Exception as e:
+            if _is_rate_limited(e):
+                logger.warning("Instagram ограничил частоту запросов (429). Повторю позже.")
+                raise InstagramRateLimited from e
+            logger.warning("Не удалось проверить сессию Instagram: %s", e)
+
+    _password_login(client)
+    client.dump_settings(session_file)
     _client = client
     return client
 
 
-def _get_client():
+def _get_client(*, force_password: bool = False):
     global _client
     with _client_lock:
-        if _client is None:
-            return _login_sync()
+        if force_password or _client is None:
+            return _login_sync(force_password=force_password)
         return _client
 
 
@@ -417,7 +495,9 @@ def _fetch_threads(client, pending: bool) -> list:
                 continue
             try:
                 return method(amount=20) or []
-            except Exception:
+            except Exception as e:
+                if _is_rate_limited(e):
+                    raise InstagramRateLimited from e
                 logger.exception("Не удалось получить запросы Instagram (%s)", method_name)
         return []
 
@@ -435,11 +515,15 @@ def _fetch_threads(client, pending: bool) -> list:
             return client.direct_threads(amount=20, selected_filter="unread") or []
         except TypeError:
             threads = client.direct_threads(amount=20) or []
-    except Exception:
+    except Exception as e:
+        if _is_rate_limited(e):
+            raise InstagramRateLimited from e
         logger.exception("Не удалось получить непрочитанные диалоги Instagram")
         try:
             threads = client.direct_threads(amount=20) or []
-        except Exception:
+        except Exception as e:
+            if _is_rate_limited(e):
+                raise InstagramRateLimited from e
             logger.exception("Не удалось получить входящие Instagram")
             return []
     own_id = str(client.user_id)
@@ -515,11 +599,11 @@ def _fetch_new_sync() -> list[dict]:
         return messages
     except PleaseWaitFewMinutes:
         logger.warning("Instagram просит подождать, пропускаю этот цикл")
-        return []
+        raise InstagramRateLimited
     except LoginRequired:
         logger.warning("Сессия Instagram недействительна, пробую войти заново")
         _reset_client()
-        client = _get_client()
+        client = _get_client(force_password=True)
         threads = _fetch_threads(client, pending=False)
         pending_threads = _fetch_threads(client, pending=True)
         messages = []
@@ -532,6 +616,12 @@ def _fetch_new_sync() -> list[dict]:
                     seen_ids.add(item["ig_id"])
                     messages.append(item)
         return messages
+    except InstagramRateLimited:
+        raise
+    except Exception as e:
+        if _is_rate_limited(e):
+            raise InstagramRateLimited from e
+        raise
 
 
 def _send_reply_sync(thread_id: str, text: str, files: list[dict], is_pending: bool) -> None:
@@ -721,8 +811,18 @@ async def ig_loop(bot: Bot) -> None:
     )
     asyncio.create_task(_notify_code_watch(bot))
     while True:
+        remaining = _backoff_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+            continue
         try:
             await process_new_ig(bot)
-        except Exception:
-            logger.exception("Ошибка цикла проверки Instagram")
+            _reset_backoff()
+        except InstagramRateLimited:
+            _mark_rate_limited()
+        except Exception as e:
+            if _is_rate_limited(e):
+                _mark_rate_limited()
+            else:
+                logger.exception("Ошибка цикла проверки Instagram")
         await asyncio.sleep(config.IG_POLL_INTERVAL)
