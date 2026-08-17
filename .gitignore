@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *.db
 *.db-journal
+*.log
 storage/
 .idea/
 .vscode/

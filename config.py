@@ -49,6 +49,7 @@ def folder_label(folder: str | None) -> str:
 FORWARD_FROM = "th@liga-znatokov.by"
 
 DB_PATH = BASE_DIR / "bot.db"
+LOG_PATH = BASE_DIR / "bot.log"
 STORAGE_DIR = BASE_DIR / "storage"
 MAIL_STORAGE = STORAGE_DIR / "mail"
 REPLY_STORAGE = STORAGE_DIR / "replies"

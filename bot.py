@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
+
+import config
 
 
 def _setup_logging() -> None:
-    """Пишем логи сразу в stdout — так их видно в консоли на сервере."""
+    """Пишем логи в файл bot.log и сразу в stdout."""
     try:
         sys.stdout.reconfigure(line_buffering=True, write_through=True)
         sys.stderr.reconfigure(line_buffering=True, write_through=True)
@@ -12,14 +15,25 @@ def _setup_logging() -> None:
         pass
 
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(formatter)
+    console.setLevel(logging.INFO)
+
+    log_file = RotatingFileHandler(
+        config.LOG_PATH,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    log_file.setFormatter(formatter)
+    log_file.setLevel(logging.INFO)
 
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(console)
+    root.addHandler(log_file)
 
 
 _setup_logging()
@@ -27,7 +41,6 @@ _setup_logging()
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-import config
 import db
 from handlers_auth import router as auth_router
 from handlers_emails import router as emails_router
@@ -65,7 +78,7 @@ async def main() -> None:
 
     asyncio.create_task(mail_loop(bot))
     asyncio.create_task(ig_loop(bot))
-    logger.info("Бот запущен")
+    logger.info("Бот запущен, логи пишутся в %s", config.LOG_PATH)
     await dp.start_polling(bot)
 
 
