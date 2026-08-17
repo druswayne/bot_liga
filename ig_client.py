@@ -34,6 +34,18 @@ _backoff_sec = 0
 _backoff_until = 0.0
 _MIN_BACKOFF = 10 * 60
 _MAX_BACKOFF = 30 * 60
+_PASSWORD_LOGIN_COOLDOWN = 2 * 60 * 60
+_password_login_blocked_until = 0.0
+
+_notify_bot: Bot | None = None
+_notify_loop: asyncio.AbstractEventLoop | None = None
+_code_notice_sent = False
+
+CODE_LABELS = {
+    "sms": "из SMS",
+    "email": "из письма Instagram",
+    "2fa": "из приложения двухфакторной аутентификации",
+}
 
 
 class InstagramRateLimited(Exception):
@@ -72,11 +84,15 @@ def _is_rate_limited(exc: BaseException | None) -> bool:
 
 def _mark_rate_limited() -> None:
     global _backoff_sec, _backoff_until
-    _backoff_sec = min(max(_backoff_sec * 2, _MIN_BACKOFF), _MAX_BACKOFF)
+    login_wait = _password_login_blocked_until - time.monotonic()
+    if login_wait > 0:
+        _backoff_sec = int(login_wait)
+    else:
+        _backoff_sec = min(max(_backoff_sec * 2, _MIN_BACKOFF), _MAX_BACKOFF)
     _backoff_until = time.monotonic() + _backoff_sec
     logger.warning(
         "Instagram ограничил частоту запросов (429). Пауза %s мин, без повторного входа.",
-        _backoff_sec // 60,
+        max(_backoff_sec, 60) // 60,
     )
 
 
@@ -87,6 +103,54 @@ def _reset_backoff() -> None:
     _backoff_until = 0.0
     if was_limited:
         logger.info("Лимит Instagram снят, проверка продолжается")
+
+
+def _can_password_login() -> bool:
+    return time.monotonic() >= _password_login_blocked_until
+
+
+def _block_password_login() -> None:
+    global _password_login_blocked_until
+    if not _can_password_login():
+        return
+    _password_login_blocked_until = time.monotonic() + _PASSWORD_LOGIN_COOLDOWN
+    hours = _PASSWORD_LOGIN_COOLDOWN // 3600
+    logger.warning(
+        "Вход по паролю отложен на %s ч: Instagram вернул 429 и код не запрашивал.",
+        hours,
+    )
+    _notify_users_sync(
+        "Instagram отклонил вход: слишком много попыток (429).\n"
+        "Код подтверждения при этом не запрашивается.\n"
+        f"Следующая попытка входа через {hours} ч."
+    )
+
+
+def _notify_users_sync(text: str) -> bool:
+    bot = _notify_bot
+    loop = _notify_loop
+    if not bot or not loop:
+        logger.warning("Telegram-бот ещё не готов отправить уведомление Instagram")
+        return False
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_send_to_active_users(bot, text), loop)
+        fut.result(timeout=30)
+        return True
+    except Exception:
+        logger.exception("Не удалось отправить уведомление Instagram в Telegram")
+        return False
+
+
+async def _send_to_active_users(bot: Bot, text: str) -> None:
+    users = await db.list_active_users()
+    if not users:
+        logger.warning("Нет активных пользователей Telegram — уведомление Instagram некому отправить")
+        return
+    for user in users:
+        try:
+            await bot.send_message(user["telegram_id"], text)
+        except Exception:
+            logger.exception("Не удалось отправить уведомление Instagram пользователю %s", user["telegram_id"])
 
 
 def pending_code_kind() -> str | None:
@@ -104,13 +168,21 @@ def submit_code(code: str) -> bool:
 
 
 def _request_code(kind: str) -> str | None:
-    global _pending_kind, _code_value
+    global _pending_kind, _code_value, _code_notice_sent
     _pending_kind = kind
     _code_value = None
+    _code_notice_sent = False
     _code_event.clear()
     logger.warning("Instagram запросил код подтверждения (%s)", kind)
-    if not _code_event.wait(timeout=300):
+    where = CODE_LABELS.get(kind, kind)
+    _code_notice_sent = _notify_users_sync(
+        f"Instagram запросил код подтверждения ({where}).\n"
+        "Отправьте его командой:\n"
+        "/ig_code 123456"
+    )
+    if not _code_event.wait(timeout=900):
         _pending_kind = None
+        logger.warning("Код подтверждения Instagram не получен за 15 минут")
         return None
     _pending_kind = None
     return _code_value
@@ -400,15 +472,42 @@ def _collect_attachments(client, msg) -> list[dict]:
 
 def _new_client():
     from instagrapi import Client
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 
-    client = Client()
-    client.delay_range = [2, 5]
+    try:
+        client = Client(
+            delay_range=[2, 5],
+            session_retry_total=0,
+            session_retry_statuses=[500, 502, 503, 504],
+        )
+    except TypeError:
+        client = Client()
+        client.delay_range = [2, 5]
     client.challenge_code_handler = _challenge_code_handler
+    try:
+        retry = Retry(total=0, raise_on_status=False)
+        adapter = HTTPAdapter(max_retries=retry)
+        for session in (getattr(client, "private", None), getattr(client, "public", None)):
+            if session is None:
+                continue
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+    except Exception:
+        logger.debug("Не удалось отключить повторы HTTP 429", exc_info=True)
     return client
 
 
 def _password_login(client):
     from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired
+
+    if not _can_password_login():
+        remaining = int(_password_login_blocked_until - time.monotonic())
+        logger.warning(
+            "Пропускаю вход по паролю, осталось ждать %s мин (лимит Instagram).",
+            max(remaining, 0) // 60,
+        )
+        raise InstagramRateLimited
 
     try:
         client.login(config.IG_USERNAME, config.IG_PASSWORD)
@@ -420,17 +519,23 @@ def _password_login(client):
             client.login(config.IG_USERNAME, config.IG_PASSWORD, verification_code=code)
         except Exception as e:
             if _is_rate_limited(e):
-                logger.warning("Instagram ограничил частоту входа (429). Повторю позже, без второго логина.")
+                _block_password_login()
                 raise InstagramRateLimited from e
             raise
         logger.info("Вход в Instagram выполнен после 2FA")
         return client
     except ChallengeRequired:
-        logger.exception("Instagram запросил ручную проверку аккаунта")
+        logger.warning("Instagram запросил ручную проверку аккаунта")
+        _notify_users_sync(
+            "Instagram запросил проверку аккаунта в приложении.\n"
+            "Откройте Instagram на телефоне и подтвердите вход.\n"
+            "Если придёт код — отправьте его командой /ig_code 123456"
+        )
         raise
     except Exception as e:
         if _is_rate_limited(e):
             logger.warning("Instagram ограничил частоту входа (429). Повторю позже, без второго логина.")
+            _block_password_login()
             raise InstagramRateLimited from e
         raise
     logger.info("Вход в Instagram выполнен")
@@ -467,8 +572,23 @@ def _login_sync(*, force_password: bool = False):
                 raise InstagramRateLimited from e
             logger.warning("Не удалось проверить сессию Instagram: %s", e)
 
-    _password_login(client)
-    client.dump_settings(session_file)
+    if not _can_password_login():
+        remaining = int(_password_login_blocked_until - time.monotonic())
+        logger.warning(
+            "Нет рабочей сессии Instagram, вход по паролю отложен ещё на %s мин.",
+            max(remaining, 0) // 60,
+        )
+        raise InstagramRateLimited
+
+    try:
+        _password_login(client)
+        client.dump_settings(session_file)
+    except InstagramRateLimited:
+        try:
+            client.dump_settings(session_file)
+        except Exception:
+            logger.debug("Не удалось сохранить устройство Instagram после 429", exc_info=True)
+        raise
     _client = client
     return client
 
@@ -602,6 +722,8 @@ def _fetch_new_sync() -> list[dict]:
         raise InstagramRateLimited
     except LoginRequired:
         logger.warning("Сессия Instagram недействительна, пробую войти заново")
+        if not _can_password_login():
+            raise InstagramRateLimited
         _reset_client()
         client = _get_client(force_password=True)
         threads = _fetch_threads(client, pending=False)
@@ -776,34 +898,28 @@ async def process_new_ig(bot: Bot) -> None:
 
 async def _notify_code_watch(bot: Bot) -> None:
     last = None
-    labels = {
-        "sms": "из SMS",
-        "email": "из письма Instagram",
-        "2fa": "из приложения двухфакторной аутентификации",
-    }
     while True:
         kind = pending_code_kind()
-        if kind and kind != last:
-            where = labels.get(kind, kind)
-            text = (
+        if kind and kind != last and not _code_notice_sent:
+            where = CODE_LABELS.get(kind, kind)
+            await _send_to_active_users(
+                bot,
                 f"Instagram запросил код подтверждения ({where}).\n"
                 "Отправьте его командой:\n"
-                "/ig_code 123456"
+                "/ig_code 123456",
             )
-            for user in await db.list_active_users():
-                try:
-                    await bot.send_message(user["telegram_id"], text)
-                except Exception:
-                    logger.exception("Не удалось отправить запрос кода Instagram")
         last = kind
         await asyncio.sleep(1)
 
 
 async def ig_loop(bot: Bot) -> None:
+    global _notify_bot, _notify_loop
     config.IG_STORAGE.mkdir(parents=True, exist_ok=True)
     if not config.IG_USERNAME or not config.IG_PASSWORD:
         logger.warning("IG_USERNAME или IG_PASSWORD не заданы — проверка Instagram отключена")
         return
+    _notify_bot = bot
+    _notify_loop = asyncio.get_running_loop()
     logger.info(
         "Проверка Instagram запущена для %s (каждые %s сек)",
         config.IG_USERNAME,
