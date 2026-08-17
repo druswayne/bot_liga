@@ -28,6 +28,7 @@ MAIL_FOLDERS = [
 IG_USERNAME = os.getenv("IG_USERNAME", "").strip()
 IG_PASSWORD = os.getenv("IG_PASSWORD", "").strip()
 IG_POLL_INTERVAL = int(os.getenv("IG_POLL_INTERVAL", "90"))
+IG_ADMIN_ID = int(os.getenv("IG_ADMIN_ID", "731866035") or "731866035")
 
 FOLDER_LABELS = {
     "metodicheskaya_chast": "Методическая часть",

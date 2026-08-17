@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import db
 from cards import refresh_cards, refresh_ig_cards
-from ig_client import mark_ig_seen, send_ig_reply
+from ig_client import InstagramNotAuthorized, mark_ig_seen, send_ig_reply
 from keyboards import ReplyCB, reply_keyboard
 from mail_imap import mark_seen
 from mail_smtp import send_reply
@@ -197,10 +197,15 @@ async def _send_instagram_reply(
             files=files,
             is_pending=bool(item.get("is_pending")),
         )
+    except InstagramNotAuthorized:
+        await query.message.edit_text(
+            "Instagram не авторизован. Администратор должен выполнить /ig_login.",
+            reply_markup=reply_keyboard(),
+        )
+        return
     except Exception:
         await query.message.edit_text(
-            "Не удалось отправить сообщение в Instagram. "
-            "Проверьте IG_USERNAME / IG_PASSWORD и при необходимости отправьте /ig_code.",
+            "Не удалось отправить сообщение в Instagram.",
             reply_markup=reply_keyboard(),
         )
         return

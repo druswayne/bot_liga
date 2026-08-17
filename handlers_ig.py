@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 import db
 from cards import refresh_ig_cards, view_packs
 from config import ROLES, STATUS_IN_PROGRESS, STATUS_PROCESSED
-from ig_client import submit_code
+from ig_client import auth_status_text, is_ig_admin, login_instagram, submit_code
 from keyboards import IgCB, close_view_keyboard, ig_keyboard, reply_keyboard
 from states import ReplyStates
 from utils import format_ig_card, split_text
@@ -18,8 +18,35 @@ from utils import format_ig_card, split_text
 router = Router()
 
 
+def _deny_if_not_admin(message: Message) -> bool:
+    if is_ig_admin(message.from_user.id if message.from_user else None):
+        return False
+    return True
+
+
+@router.message(Command("ig_login"))
+async def cmd_ig_login(message: Message):
+    if _deny_if_not_admin(message):
+        await message.answer("Эта команда доступна только администратору.")
+        return
+    await message.answer("Запускаю вход в Instagram...")
+    result = await login_instagram()
+    await message.answer(result)
+
+
+@router.message(Command("ig_status"))
+async def cmd_ig_status(message: Message):
+    if _deny_if_not_admin(message):
+        await message.answer("Эта команда доступна только администратору.")
+        return
+    await message.answer(auth_status_text())
+
+
 @router.message(Command("ig_code"))
 async def cmd_ig_code(message: Message):
+    if _deny_if_not_admin(message):
+        await message.answer("Эта команда доступна только администратору.")
+        return
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await message.answer("Использование: /ig_code 123456")
