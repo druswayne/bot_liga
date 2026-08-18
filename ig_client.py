@@ -490,6 +490,44 @@ def _new_client():
     return client
 
 
+def _apply_fresh_device(client) -> None:
+    """Новый отпечаток устройства для ручного входа. Сохранённую сессию не трогаем."""
+    current = dict(getattr(client, "device_settings", None) or {})
+    device = {
+        "app_version": current.get("app_version") or "269.0.0.18.75",
+        "android_version": 34,
+        "android_release": "14",
+        "dpi": "480dpi",
+        "resolution": "1080x2340",
+        "manufacturer": "samsung",
+        "device": "a54x",
+        "model": "SM-A546B",
+        "cpu": "s5e8835",
+        "version_code": current.get("version_code") or "314665256",
+    }
+    try:
+        client.set_device(device, reset=True)
+    except TypeError:
+        client.set_device(device)
+        client.set_uuids({})
+    try:
+        client.set_user_agent()
+    except Exception:
+        logger.debug("Не удалось обновить User-Agent Instagram", exc_info=True)
+    try:
+        client.set_locale("ru_RU")
+        client.set_country("BY")
+        client.set_country_code(375)
+        client.set_timezone_offset(3 * 3600)
+    except Exception:
+        logger.debug("Не удалось задать локаль Instagram", exc_info=True)
+    logger.info(
+        "Устройство для входа Instagram: %s %s, locale=ru_RU, country=BY",
+        device["manufacturer"],
+        device["model"],
+    )
+
+
 def _password_login(client):
     from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired
 
@@ -563,21 +601,12 @@ def _login_by_password_sync() -> None:
     session_file = config.IG_SESSION_FILE
     session_file.parent.mkdir(parents=True, exist_ok=True)
     client = _new_client()
-    if session_file.exists():
-        try:
-            client.load_settings(session_file)
-        except Exception:
-            logger.exception("Не удалось прочитать сессию Instagram")
-            client = _new_client()
+    _apply_fresh_device(client)
     try:
         _password_login(client)
         client.dump_settings(session_file)
     except Exception as e:
         _auth_error = _format_auth_error(e)
-        try:
-            client.dump_settings(session_file)
-        except Exception:
-            logger.debug("Не удалось сохранить устройство Instagram", exc_info=True)
         raise
     with _client_lock:
         _client = client
