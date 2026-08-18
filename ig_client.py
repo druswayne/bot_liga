@@ -615,6 +615,49 @@ def _login_by_password_sync() -> None:
         _session_expired_notified = False
 
 
+def _normalize_sessionid(raw: str) -> str:
+    value = (raw or "").strip().strip('"').strip("'")
+    if value.lower().startswith("sessionid="):
+        value = value.split("=", 1)[1].strip()
+    return value
+
+
+def _login_by_sessionid_sync(sessionid: str) -> None:
+    global _client, _auth_error, _logged_in_via, _session_expired_notified
+
+    sessionid = _normalize_sessionid(sessionid)
+    if not sessionid:
+        raise RuntimeError("Пустой sessionid")
+
+    session_file = config.IG_SESSION_FILE
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    client = _new_client()
+    try:
+        client.set_locale("ru_RU")
+        client.set_country("BY")
+        client.set_country_code(375)
+        client.set_timezone_offset(3 * 3600)
+    except Exception:
+        logger.debug("Не удалось задать локаль Instagram", exc_info=True)
+    try:
+        login = getattr(client, "login_by_sessionid", None)
+        if login is None:
+            raise RuntimeError("Эта версия instagrapi не поддерживает вход по sessionid")
+        login(sessionid)
+        client.dump_settings(session_file)
+    except Exception as e:
+        _auth_error = _format_auth_error(e)
+        if _is_rate_limited(e):
+            raise InstagramRateLimited from e
+        raise
+    logger.info("Вход в Instagram выполнен по sessionid")
+    with _client_lock:
+        _client = client
+        _logged_in_via = "session"
+        _auth_error = None
+        _session_expired_notified = False
+
+
 def _get_client():
     with _client_lock:
         if _client is not None:
@@ -931,7 +974,7 @@ def auth_status_text() -> str:
         lines.append("Сессия: есть файл, но не принят" if session_exists else "Сессия: файла нет")
         if _auth_error:
             lines.append(f"Последняя ошибка: {_auth_error}")
-        lines.append("Для входа отправьте /ig_login")
+        lines.append("Для входа: /ig_session (cookie sessionid) или /ig_login")
     if _login_busy:
         lines.append("Сейчас выполняется вход...")
     if pending:
@@ -958,15 +1001,46 @@ async def login_instagram() -> str:
         )
     except InstagramRateLimited:
         return (
-            "Instagram отклонил вход: слишком много попыток (429). "
-            "Код подтверждения при этом не запрашивается. "
-            "Подождите несколько часов и снова отправьте /ig_login."
+            "Instagram снова отклонил вход по паролю (429). "
+            "С сервера этот способ сейчас не работает — не повторяйте /ig_login.\n"
+            "Войдите через cookie: /ig_session SESSIONID"
         )
     except RuntimeError as e:
         return str(e)
     except Exception as e:
         logger.exception("Ошибка входа в Instagram")
         return f"Вход не удался: {_format_auth_error(e)}"
+    finally:
+        _login_busy = False
+
+
+async def login_instagram_session(sessionid: str) -> str:
+    global _login_busy
+    sessionid = _normalize_sessionid(sessionid)
+    if not sessionid:
+        return "Использование: /ig_session SESSIONID"
+    if is_authorized() and not pending_code_kind():
+        return "Instagram уже авторизован. Повторный вход не нужен."
+    if _login_busy:
+        return "Вход уже выполняется."
+    _login_busy = True
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _login_by_sessionid_sync, sessionid)
+        return (
+            "Вход в Instagram выполнен по sessionid. Сессия сохранена — "
+            "после перезапуска бота входить снова не нужно."
+        )
+    except InstagramRateLimited:
+        return (
+            "Instagram вернул 429 даже для sessionid. "
+            "Подождите сутки и не используйте /ig_login с сервера."
+        )
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        logger.exception("Ошибка входа в Instagram по sessionid")
+        return f"Вход по sessionid не удался: {_format_auth_error(e)}"
     finally:
         _login_busy = False
 

@@ -25,6 +25,7 @@ class AccessMiddleware(BaseMiddleware):
                 text.startswith("/ig_code")
                 or text.startswith("/ig_login")
                 or text.startswith("/ig_status")
+                or text.startswith("/ig_session")
             )
         )
 

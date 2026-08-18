@@ -24,7 +24,8 @@ def _welcome(role_key: str, user_id: int | None = None) -> str:
         text += (
             "\n\nInstagram:\n"
             "/ig_status — статус входа\n"
-            "/ig_login — войти в Instagram\n"
+            "/ig_session — войти по cookie sessionid (если /ig_login даёт 429)\n"
+            "/ig_login — войти по паролю\n"
             "/ig_code — отправить код подтверждения"
         )
     return text
@@ -95,8 +96,10 @@ async def cmd_help(message: Message):
             "\n\nКоманды Instagram (только администратор):\n"
             "/ig_status — статус авторизации: вошёл ли Instagram, есть ли сохранённая сессия, "
             "последняя ошибка\n"
-            "/ig_login — вручную войти в Instagram. Бот сам вход не выполняет. "
-            "После успеха сессия сохраняется и после перезапуска входить снова не нужно\n"
+            "/ig_session SESSIONID — вход по cookie sessionid из браузера, без пароля. "
+            "Используйте это, если /ig_login даёт 429. Сообщение с cookie бот удаляет\n"
+            "/ig_login — вход по паролю с сервера. Сейчас Instagram его режет (429), "
+            "пока не используйте\n"
             "/ig_code 123456 — отправить код подтверждения, если Instagram его запросил "
             "(из SMS, почты или приложения 2FA)"
         )

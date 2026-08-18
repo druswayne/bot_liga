@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 import db
 from cards import refresh_ig_cards, view_packs
 from config import ROLES, STATUS_IN_PROGRESS, STATUS_PROCESSED
-from ig_client import auth_status_text, is_ig_admin, login_instagram, submit_code
+from ig_client import auth_status_text, is_ig_admin, login_instagram, login_instagram_session, submit_code
 from keyboards import IgCB, close_view_keyboard, ig_keyboard, reply_keyboard
 from states import ReplyStates
 from utils import format_ig_card, split_text
@@ -31,6 +31,30 @@ async def cmd_ig_login(message: Message):
         return
     await message.answer("Запускаю вход в Instagram...")
     result = await login_instagram()
+    await message.answer(result)
+
+
+@router.message(Command("ig_session"))
+async def cmd_ig_session(message: Message):
+    if _deny_if_not_admin(message):
+        await message.answer("Эта команда доступна только администратору.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    sessionid = parts[1].strip() if len(parts) > 1 else ""
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+    if not sessionid:
+        await message.answer(
+            "Использование: /ig_session SESSIONID\n\n"
+            "SESSIONID — cookie sessionid из браузера, где вы уже вошли в Instagram "
+            "(индикатор сайта → cookies → sessionid).\n"
+            "Сообщение с cookie бот удаляет сам."
+        )
+        return
+    await message.answer("Вхожу в Instagram по sessionid...")
+    result = await login_instagram_session(sessionid)
     await message.answer(result)
 
 
