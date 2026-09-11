@@ -3,11 +3,13 @@ from email.encoders import encode_base64
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 import aiosmtplib
 
 import config
+from mail_imap import save_sent_copy
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,9 @@ async def send_reply(
     message["From"] = config.MAIL_USERNAME
     message["To"] = to_addr
     message["Subject"] = subject
+    message["Date"] = formatdate(localtime=True)
+    domain = config.MAIL_USERNAME.split("@")[-1] if "@" in config.MAIL_USERNAME else None
+    message["Message-ID"] = make_msgid(domain=domain)
     if in_reply_to:
         message["In-Reply-To"] = in_reply_to
         message["References"] = in_reply_to
@@ -50,3 +55,4 @@ async def send_reply(
         timeout=30,
     )
     logger.info("Ответ отправлен на %s", to_addr)
+    await save_sent_copy(message.as_bytes())

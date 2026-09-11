@@ -98,6 +98,16 @@ def _folder_candidates(folder: str) -> list[str]:
     return names
 
 
+_SENT_FOLDER_NAMES = (
+    "INBOX.Sent",
+    "Sent",
+    "Отправленные",
+    "INBOX.Отправленные",
+    "Sent Items",
+    "INBOX.Sent Items",
+)
+
+
 def _open_folder(mailbox: MailBox, folder: str) -> str | None:
     for name in _folder_candidates(folder):
         try:
@@ -204,6 +214,52 @@ async def process_new_mail(bot: Bot) -> None:
     for folder, max_uid in new_uids.items():
         if max_uid > last_uids.get(folder, 0):
             await db.set_setting(f"last_uid:{folder}", str(max_uid))
+
+
+def _resolve_sent_folder(mailbox: MailBox) -> str | None:
+    folders = mailbox.folder.list()
+    names = {info.name for info in folders}
+    configured = (config.MAIL_SENT_FOLDER or "").strip()
+    if configured:
+        for candidate in _folder_candidates(configured):
+            if candidate in names:
+                return candidate
+        resolved = _open_folder(mailbox, configured)
+        if resolved:
+            return resolved
+    for info in folders:
+        flags = {flag.lower() for flag in info.flags}
+        if "\\sent" in flags:
+            return info.name
+    for candidate in _SENT_FOLDER_NAMES:
+        if candidate in names:
+            return candidate
+    return None
+
+
+def _save_sent_sync(raw: bytes) -> str:
+    payload = raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    with MailBox(config.IMAP_HOST, port=config.IMAP_PORT).login(
+        config.MAIL_USERNAME,
+        config.MAIL_PASSWORD,
+    ) as mailbox:
+        folder = _resolve_sent_folder(mailbox)
+        if not folder:
+            available = ", ".join(info.name for info in mailbox.folder.list()) or "(пусто)"
+            raise RuntimeError(f"Папка Отправленные не найдена. Доступны: {available}")
+        mailbox.append(payload, folder=folder, flag_set=[MailMessageFlags.SEEN])
+        return folder
+
+
+async def save_sent_copy(raw: bytes) -> None:
+    if not raw or not config.MAIL_PASSWORD:
+        return
+    loop = asyncio.get_running_loop()
+    try:
+        folder = await loop.run_in_executor(None, _save_sent_sync, raw)
+        logger.info("Копия ответа сохранена в %s", folder)
+    except Exception:
+        logger.exception("Не удалось сохранить копию ответа в Отправленные")
 
 
 def _mark_seen_sync(imap_uid: str, folder: str) -> None:

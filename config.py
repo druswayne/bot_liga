@@ -16,6 +16,7 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.liga-znatokov.by").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 MAIL_POLL_INTERVAL = int(os.getenv("MAIL_POLL_INTERVAL", "30"))
+MAIL_SENT_FOLDER = os.getenv("MAIL_SENT_FOLDER", "INBOX.Sent").strip()
 MAIL_FOLDERS = [
     name.strip()
     for name in os.getenv(
