@@ -21,7 +21,7 @@ MAIL_FOLDERS = [
     name.strip()
     for name in os.getenv(
         "MAIL_FOLDERS",
-        "INBOX.Drafts.metodicheskaya_chast,INBOX.Drafts.tekhnicheskaya_chast,INBOX.Drafts.drugoe",
+        "INBOX,INBOX.Drafts.metodicheskaya_chast,INBOX.Drafts.tekhnicheskaya_chast,INBOX.Drafts.drugoe",
     ).split(",")
     if name.strip()
 ]
@@ -35,7 +35,7 @@ FOLDER_LABELS = {
     "metodicheskaya_chast": "Методическая часть",
     "tekhnicheskaya_chast": "Техническая часть",
     "drugoe": "Другое",
-    "INBOX": "Входящие",
+    "INBOX": "Общая",
     "INBOX.Методическая часть": "Методическая часть",
 }
 
