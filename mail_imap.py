@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
-from imap_tools import AND, MailBox, MailMessageFlags
+from imap_tools import MailBox, MailMessageFlags
 
 import config
 import db
@@ -36,22 +36,17 @@ def _safe_filename(name: str) -> str:
 def _fetch_folder(mailbox: MailBox, folder: str, last_uid: int) -> tuple[list[dict], int]:
     messages: list[dict] = []
     max_uid = last_uid
-    folder_max = last_uid
-    if last_uid <= 0:
-        uids = mailbox.uids()
-        folder_max = max((int(u) for u in uids), default=0)
-        criteria = AND(seen=False)
-    else:
-        criteria = f"UID {last_uid + 1}:*"
+    criteria = f"UID {max(last_uid, 0) + 1}:*"
 
     for msg in mailbox.fetch(criteria, mark_seen=False, bulk=True):
         uid = int(msg.uid)
-        if last_uid > 0 and uid <= last_uid:
+        if uid <= last_uid:
             continue
         max_uid = max(max_uid, uid)
 
         from_addr = parse_from(msg.from_ or "")
         if from_addr.lower() == config.MAIL_USERNAME.lower():
+            logger.debug("Пропуск своего письма UID=%s в %s", uid, folder)
             continue
 
         body = extract_body(msg.text, msg.html)
@@ -82,7 +77,6 @@ def _fetch_folder(mailbox: MailBox, folder: str, last_uid: int) -> tuple[list[di
             }
         )
 
-    max_uid = max(max_uid, folder_max if last_uid <= 0 else max_uid)
     return messages, max_uid
 
 
@@ -133,6 +127,13 @@ def _fetch_new_sync(last_uids: dict[str, int]) -> tuple[list[dict], dict[str, in
             if not resolved:
                 continue
             folder_messages, max_uid = _fetch_folder(mailbox, resolved, last_uid)
+            logger.info(
+                "Папка %s: last_uid=%s, новых=%s, max_uid=%s",
+                resolved,
+                last_uid,
+                len(folder_messages),
+                max_uid,
+            )
             messages.extend(folder_messages)
             new_uids[folder] = max_uid
 
